@@ -32,8 +32,16 @@ export debug: Show v => HashTable v -> IO ()
 debug ht = do
    l <- readIORef ht.load
    a <- readIORef ht.array
-   putStr "load: \{show l}\n"
-   for_ [0 .. max a - 1]$ \i => readArray a i >>= putStrLn . ("DEBUG TABLE: " ++) . show
+   probe_count <- newIORef 0
+   putStr "TABLE DEBUG: BEGIN\n"
+   for_ [0 .. max a - 1]$ \i => do
+      x <- readArray a i
+      whenJust x (\_ => modifyIORef probe_count (+1))
+      printLn x
+   let probe_weight = cast {to=Double} !(readIORef probe_count) / cast (max a) * 100
+   putStr "load: \{show l} of \{show$ max a}\n"
+   putStr "probe weight: \{substr 0 4$ show$ probe_weight}%\n"
+   putStr "TABLE DEBUG: END\n"
 
 newHashTable hash = do
    array <- newArray size
