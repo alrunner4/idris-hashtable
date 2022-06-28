@@ -1,6 +1,7 @@
 module Data.HashTable
-import Data.IOArray
-import Data.IORef
+import Data.List {- catMaybes -}
+import Data.IOArray {- newArray, readArray, writeArray -}
+import Data.IORef {- newIORef, modifyIORef, readIORef, writeIORef -}
 %default total
 
 -------------
@@ -11,12 +12,15 @@ export newHashTable: Eq v => (v -> Int) -> {default 32 size: Int} -> HasIO m => 
 export (.insert): HashTable v -> HasIO m => v -> m Bool
 export (.member): HashTable v -> HasIO m => v -> m Bool
 export (.delete): HashTable v -> HasIO m => v -> m Bool
+export toList: HashTable v -> HasIO m => m (List v)
+export debug: Show v => HashTable v -> IO ()
 
 ------------
 -- Detail --
 
 data Probe v = Present v | Deleted
 
+export
 record HashTable (v: Type) where
    constructor HashArray
    {auto Eq: Eq v}
@@ -28,7 +32,6 @@ Show v => Show (Probe v) where
    show (Present v) = "Present " ++ show v
    show Deleted = "Deleted"
 
-export debug: Show v => HashTable v -> IO ()
 debug ht = do
    l <- readIORef ht.load
    a <- readIORef ht.array
@@ -120,3 +123,11 @@ grow ht = do
                             else assert_total$ probe (probe_offset+1)
                Deleted   =>      assert_total$ probe (probe_offset+1)
    in probe 0
+
+toList ht = do
+   array <- readIORef ht.array {io=m}
+   for [0 .. max array - 1] (readArray array)
+      <&> mapMaybe (\case
+            Nothing          => Nothing
+            Just  Deleted    => Nothing
+            Just (Present v) => Just v)
