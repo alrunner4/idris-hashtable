@@ -9,11 +9,27 @@ import Data.IORef {- newIORef, modifyIORef, readIORef, writeIORef -}
 -- Summary --
 
 export data HashTable: Type -> Type
-export newHashTable: Eq v => (v -> Int) -> {default 32 size: Int} -> HasIO m => m (HashTable v)
-export (.insert): HashTable v -> HasIO m => v -> m Bool
-export (.member):   HashTable v ->  v          -> HasIO m => m Bool
-export (.delete):   HashTable v ->  v          -> HasIO m => m Bool
-export (.lookup):   HashTable v ->  v          -> HasIO m => m (Maybe v)
+export (.insert): HasIO m => HashTable v -> v -> m  Bool
+export (.member): HasIO m => HashTable v -> v -> m  Bool
+export (.delete): HasIO m => HashTable v -> v -> m  Bool
+export (.lookup): HasIO m => HashTable v -> v -> m (Maybe v)
+
+export newHashTable:
+   {default 32 size: Int} ->
+   {0 v: Type} -> (v -> v -> Bool) -> (v -> Int) ->
+   {0 m: Type -> Type} -> HasIO m =>
+   m (HashTable v)
+
+namespace ByEq
+   export newHashTable:
+      {default 32 size: Int} ->
+      {0 v: Type} -> Eq v => (v -> Int) ->
+      {0 m: Type -> Type} -> HasIO m =>
+      m (HashTable v)
+
+export memberByHash: HasIO m => (Int, v -> Bool) -> HashTable v -> m Bool
+export deleteByHash: HasIO m => (Int, v -> Bool) -> HashTable v -> m Bool
+export lookupByHash: HasIO m => (Int, v -> Bool) -> HashTable v -> m (Maybe v)
 
 export toList: HashTable v -> HasIO m => m (List v)
 export debug: Show v => HashTable v -> IO ()
@@ -49,9 +65,12 @@ debug ht = do
    putStr "probe weight: \{substr 0 4$ show$ probe_weight}%\n"
    putStr "TABLE DEBUG: END\n"
 
-newHashTable hash = do
+newHashTable equal hash = do
    array <- newArray size
-   HashArray hash (==) <$> newIORef 0 <*> newIORef array
+   HashArray hash equal <$> newIORef 0 <*> newIORef array
+
+namespace ByEq
+   newHashTable hash = newHashTable {size} (==) hash
 
 loadThreshold: Double
 loadThreshold = 0.8
@@ -68,11 +87,15 @@ grow ht = do
          | _ => pure ()
       ignore$ assert_total$ ht.insert e
 
-(.insert) ht v = do
+(.lookup) ht x = lookupByHash (ht.hash x, ht.equal x) ht
+(.member) ht x = memberByHash (ht.hash x, ht.equal x) ht
+(.delete) ht x = deleteByHash (ht.hash x, ht.equal x) ht
+
+(.insert) ht x = do
    array <- readIORef ht.array
    currentLoad <- readIORef ht.load
    let loadFactor = cast (currentLoad+1) / cast (max array)
-   let hashed = ht.hash v
+   let hashed = ht.hash x
    when (loadFactor > loadThreshold) (grow ht)
    array <- readIORef ht.array
    let probe: Int -> m Bool
@@ -80,17 +103,16 @@ grow ht = do
          let array_pos = (hashed + probe_offset) `mod` max array
          case !(readArray array array_pos) of
             Nothing => do
-               ignore$ writeArray array array_pos (Present v)
+               ignore$ writeArray array array_pos (Present x)
                modifyIORef ht.load (+1)
                pure True
-            Just (Present e) => if ht.equal v e
+            Just (Present e) => if ht.equal x e
                                 then pure False
                                 else assert_total$ probe (probe_offset+1)
             Just  Deleted    =>      assert_total$ probe (probe_offset+1)
    probe 0
 
-(.lookup) ht x = let
-   hashed = ht.hash x
+lookupByHash (hashed, selecting) ht = let
    probe: Int -> m (Maybe v)
    probe probe_offset = do
       array <- readIORef ht.array
@@ -98,17 +120,16 @@ grow ht = do
       if probe_offset >= max array
          then pure Nothing
          else case !(readArray array array_pos) of
-                 Just (Present e) => if ht.equal x e
+                 Just (Present e) => if selecting e
                                      then pure (Just e)
                                      else assert_total$ probe (probe_offset+1)
                  Just  Deleted   =>       assert_total$ probe (probe_offset+1)
                  Nothing         => pure Nothing
    in probe 0
 
-(.member) ht v = isJust <$> ht.lookup v
+memberByHash (hashed, selecting) ht = isJust <$> lookupByHash (hashed, selecting) ht
 
-(.delete) ht v = let
-   hashed = ht.hash v
+deleteByHash (hashed, selecting) ht = let
    probe: Int -> m Bool
    probe probe_offset = do
       array <- readIORef ht.array
@@ -116,18 +137,19 @@ grow ht = do
       if probe_offset >= max array
          then pure False
          else case !(readArray array array_pos) of
-                 Just (Present e) => if ht.equal v e
+                 Just (Present e) => if   selecting e
                                      then do
-                                       ignore$ writeArray array array_pos Deleted
-                                       modifyIORef ht.load (\l => l-1)
-                                       pure True
+                                          True <- writeArray array array_pos Deleted
+                                             | False => pure False
+                                          modifyIORef ht.load (\l => l-1)
+                                          pure True
                                      else assert_total$ probe (probe_offset+1)
                  Just  Deleted    =>      assert_total$ probe (probe_offset+1)
                  Nothing          =>   pure False
    in probe 0
 
 toList ht = do
-   array <- readIORef ht.array {io=m}
+   array <- readIORef ht.array
    for [0 .. max array - 1] (readArray array)
       <&> mapMaybe (\case
             Nothing          => Nothing
